@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Concurrent;
 using System.Linq;
 using System.Net;
 using System.Net.WebSockets;
@@ -14,6 +13,8 @@ namespace WebSocketExample
         private static HttpListener Listener;
         private static CancellationTokenSource TokenSource;
         private static CancellationToken Token;
+
+        private static int SocketCounter = 0;
 
         public static void Start(string uriPrefix)
         {
@@ -43,6 +44,7 @@ namespace WebSocketExample
                 Console.WriteLine("\nServer is stopping.");
                 Listener.Stop();
                 Listener.Close();
+                TokenSource.Dispose();
             }
         }
 
@@ -91,10 +93,6 @@ namespace WebSocketExample
             }
         }
 
-        // not worried about max limit in this simple demo; ASP.NET 4.5 was documented
-        // as supporting 100,000+ concurrent websockets and it has a lot more overhead
-        private static int SocketCounter = 0;
-
         private static async Task ProcessWebSocket(HttpListenerWebSocketContext context, int socketId)
         {
             var socket = context.WebSocket;
@@ -135,7 +133,7 @@ namespace WebSocketExample
         private const string HTML =
 @"<!DOCTYPE html>
   <meta charset=""utf-8""/>
-  <title>WebSocket Test</title>
+  <title>WebSocket Echo Client</title>
   <script language=""javascript"" type=""text/javascript"">
 
   var wsUri = ""ws://localhost:8080/"";
@@ -145,10 +143,10 @@ namespace WebSocketExample
         function init()
         {
             output = document.getElementById(""output"");
-            testWebSocket();
+            configWebSocket();
         }
 
-        function testWebSocket()
+        function configWebSocket()
         {
             websocket = new WebSocket(wsUri);
             websocket.onopen = function(evt) { onOpen(evt) };
@@ -159,39 +157,39 @@ namespace WebSocketExample
 
         function onOpen(evt)
         {
-            writeToScreen(""CONNECTED"");
-            doSend(""Hello"");
+            emit(""SOCKET OPENED"");
+            sendTextFrame(""Hello"");
         }
 
         function onClose(evt)
         {
-            writeToScreen(""DISCONNECTED "" + evt.reason);
+            emit(""SOCKET CLOSED"");
         }
 
         function onMessage(evt)
         {
-            writeToScreen('<span style=""color: blue;"">RESPONSE: ' + evt.data + '</span>');
+            emit('<span style=""color:blue;"">RECEIVED: ' + evt.data + '</span>');
         }
 
         function onError(evt)
         {
-            writeToScreen('<span style=""color: red;"">ERROR:</span> ' + evt.data);
+            emit('<span style=""color:red;"">ERROR: ' + evt.data + '</span>');
         }
 
-        function doSend(message)
+        function sendTextFrame(message)
         {
             if (websocket.readyState == WebSocket.OPEN)
             {
-                writeToScreen(""SENT: "" + message);
+                emit(""SENT: "" + message);
                 websocket.send(message);
             }
             else
             {
-                writeToScreen(""Socket not open, state: "" + websocket.readyState);
+                emit(""Socket not open, state: "" + websocket.readyState);
             }
         }
 
-        function writeToScreen(message)
+        function emit(message)
         {
             var pre = document.createElement(""p"");
             pre.style.wordWrap = ""break-word"";
@@ -204,8 +202,9 @@ namespace WebSocketExample
             var txt = document.getElementById(""newMessage"");
             if (txt.value.length > 0)
             {
-                doSend(txt.value);
+                sendTextFrame(txt.value);
                 txt.value = """";
+                txt.focus();
             }
         }
 
@@ -217,7 +216,7 @@ namespace WebSocketExample
             }
             else
             {
-                writeToScreen(""Socket not open, state: "" + websocket.readyState);
+                emit(""Socket not open, state: "" + websocket.readyState);
             }
             document.getElementById(""sender"").disabled = true;
             document.getElementById(""closer"").disabled = true;

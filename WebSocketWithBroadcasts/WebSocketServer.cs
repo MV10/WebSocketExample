@@ -15,6 +15,8 @@ namespace WebSocketWithBroadcasts
         private static CancellationTokenSource TokenSource;
         private static CancellationToken Token;
 
+        private static int SocketCounter = 0;
+
         // The dictionary key corresponds to active socket IDs, and the BlockingCollection wraps
         // the default ConcurrentQueue to store broadcast messages for each active socket.
         private static ConcurrentDictionary<int, BlockingCollection<string>> BroadcastQueues = new ConcurrentDictionary<int, BlockingCollection<string>>();
@@ -47,6 +49,7 @@ namespace WebSocketWithBroadcasts
                 Console.WriteLine("\nServer is stopping.");
                 Listener.Stop();
                 Listener.Close();
+                TokenSource.Dispose();
             }
         }
 
@@ -102,10 +105,6 @@ namespace WebSocketWithBroadcasts
             }
         }
 
-        // not worried about max limit in this simple demo; ASP.NET 4.5 was documented
-        // as supporting 100,000+ concurrent websockets and it has a lot more overhead
-        private static int SocketCounter = 0;
-
         private static async Task ProcessWebSocket(HttpListenerWebSocketContext context, int socketId)
         {
             var socket = context.WebSocket;
@@ -124,12 +123,15 @@ namespace WebSocketWithBroadcasts
                     if (receiveResult.MessageType == WebSocketMessageType.Close)
                     {
                         Console.WriteLine($"Socket {socketId}: Closing websocket.");
+                        broadcastTokenSource.Cancel();
+                        BroadcastQueues.TryRemove(socketId, out _);
                         await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "", Token);
                     }
                     else
                     {
-                        Console.WriteLine($"Socket {socketId}: Echoing data.");
-                        await socket.SendAsync(new ArraySegment<byte>(buffer, 0, receiveResult.Count), receiveResult.MessageType, receiveResult.EndOfMessage, Token);
+                        Console.WriteLine($"Socket {socketId}: Echoing data to queue.");
+                        string message = Encoding.UTF8.GetString(buffer, 0, receiveResult.Count);
+                        BroadcastQueues[socketId].Add(message);
                     }
                 }
             }
@@ -151,20 +153,20 @@ namespace WebSocketWithBroadcasts
             }
         }
 
-        private const int BROADCAST_WAKEUP_INTERVAL = 250;
+        private const int BROADCAST_WAKEUP_INTERVAL = 250; // milliseconds
 
-        private static async Task WatchForBroadcasts(int socketId, WebSocket socket, CancellationToken token)
+        private static async Task WatchForBroadcasts(int socketId, WebSocket socket, CancellationToken socketToken)
         {
-            while (!token.IsCancellationRequested)
+            while (!socketToken.IsCancellationRequested)
             {
                 try
                 {
-                    await Task.Delay(BROADCAST_WAKEUP_INTERVAL, token);
-                    if (!token.IsCancellationRequested && BroadcastQueues[socketId].TryTake(out var message))
+                    await Task.Delay(BROADCAST_WAKEUP_INTERVAL, socketToken);
+                    if (!socketToken.IsCancellationRequested && BroadcastQueues[socketId].TryTake(out var message))
                     {
-                        Console.WriteLine($"Socket {socketId}: Sending broadcast.");
+                        Console.WriteLine($"Socket {socketId}: Sending from queue.");
                         var msgbuf = new ArraySegment<byte>(Encoding.UTF8.GetBytes(message));
-                        await socket.SendAsync(msgbuf, WebSocketMessageType.Text, endOfMessage: true, Token);
+                        await socket.SendAsync(msgbuf, WebSocketMessageType.Text, endOfMessage: true, socketToken);
                     }
                 }
                 catch(OperationCanceledException)
@@ -182,7 +184,7 @@ namespace WebSocketWithBroadcasts
         private const string HTML =
 @"<!DOCTYPE html>
   <meta charset=""utf-8""/>
-  <title>WebSocket Test</title>
+  <title>WebSocket Echo/Broadcast Client</title>
   <script language=""javascript"" type=""text/javascript"">
 
   var wsUri = ""ws://localhost:8080/"";
@@ -276,7 +278,7 @@ namespace WebSocketWithBroadcasts
 
   </script>
 
-  <h2>Multi-Client WebSocket Echo Test</h2>
+  <h2>Multi-Client WebSocket Echo/Broadcast Test</h2>
 
   <p><input type=""input"" id=""newMessage"" onkeyup=""if(event.key==='Enter') clickSend()""/> <input type=""button"" id=""sender"" value=""Send"" onclick=""clickSend()""/> <input type=""button"" id=""closer"" value=""Disconnect"" onclick=""clickClose()""/>
 
