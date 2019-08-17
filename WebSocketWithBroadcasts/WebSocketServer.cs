@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.WebSockets;
@@ -11,20 +12,26 @@ namespace WebSocketWithBroadcasts
 {
     public static class WebSocketServer
     {
+        // note that Microsoft plans to deprecate HttpListener,
+        // and for .NET Core they don't even support SSL/TLS
+        // https://github.com/dotnet/platform-compat/issues/88
+
         private static HttpListener Listener;
-        private static CancellationTokenSource TokenSource;
-        private static CancellationToken Token;
+
+        private static CancellationTokenSource SocketLoopTokenSource;
+        private static CancellationTokenSource ListenerLoopTokenSource;
 
         private static int SocketCounter = 0;
 
-        // The dictionary key corresponds to active socket IDs, and the BlockingCollection wraps
-        // the default ConcurrentQueue to store broadcast messages for each active socket.
-        private static ConcurrentDictionary<int, BlockingCollection<string>> BroadcastQueues = new ConcurrentDictionary<int, BlockingCollection<string>>();
+        private static bool ServerIsRunning = true;
+
+        // The key is a socket id
+        private static ConcurrentDictionary<int, ConnectedClient> Clients = new ConcurrentDictionary<int, ConnectedClient>();
 
         public static void Start(string uriPrefix)
         {
-            TokenSource = new CancellationTokenSource();
-            Token = TokenSource.Token;
+            SocketLoopTokenSource = new CancellationTokenSource();
+            ListenerLoopTokenSource = new CancellationTokenSource();
             Listener = new HttpListener();
             Listener.Prefixes.Add(uriPrefix);
             Listener.Start();
@@ -33,7 +40,7 @@ namespace WebSocketWithBroadcasts
                 Console.WriteLine("Connect browser for a basic echo-back web page.");
                 Console.WriteLine($"Server listening: {uriPrefix}");
                 // listen on a separate thread so that Listener.Stop can interrupt GetContextAsync
-                Task.Run(() => Listen().ConfigureAwait(false));
+                Task.Run(() => ListenerProcessingLoop().ConfigureAwait(false));
             }
             else
             {
@@ -41,99 +48,134 @@ namespace WebSocketWithBroadcasts
             }
         }
 
-        public static void Stop()
+        public static async Task Stop()
         {
-            if (Listener?.IsListening ?? false)
+            if (Listener?.IsListening ?? false && ServerIsRunning)
             {
-                TokenSource.Cancel();
                 Console.WriteLine("\nServer is stopping.");
+
+                ServerIsRunning = false;            // prevent new connections during shutdown
+                await CloseAllSockets();            // also cancels processing loop tokens (abort ReceiveAsync)
+                ListenerLoopTokenSource.Cancel();   // safe to stop now that sockets are closed
                 Listener.Stop();
                 Listener.Close();
-                TokenSource.Dispose();
             }
         }
 
         public static void Broadcast(string message)
         {
             Console.WriteLine($"Broadcast: {message}");
-            foreach(var kvp in BroadcastQueues)
-                kvp.Value.Add(message);
+            foreach(var kvp in Clients)
+                kvp.Value.BroadcastQueue.Add(message);
         }
 
-        private static async Task Listen()
+        private static async Task ListenerProcessingLoop()
         {
-            while (!Token.IsCancellationRequested)
+            var cancellationToken = ListenerLoopTokenSource.Token;
+            try
             {
-                HttpListenerContext context = await Listener.GetContextAsync();
-                if (context.Request.IsWebSocketRequest)
+                while (!cancellationToken.IsCancellationRequested)
                 {
-                    // HTTP is only the initial connection; upgrade to a client-specific websocket
-                    HttpListenerWebSocketContext wsContext = null;
-                    try
+                    HttpListenerContext context = await Listener.GetContextAsync();
+                    if (ServerIsRunning)
                     {
-                        wsContext = await context.AcceptWebSocketAsync(subProtocol: null);
-                        int socketId = Interlocked.Increment(ref SocketCounter);
-                        Console.WriteLine($"Socket {socketId}: New connection.");
-                        _ = Task.Run(() => ProcessWebSocket(wsContext, socketId).ConfigureAwait(false));
+                        if (context.Request.IsWebSocketRequest)
+                        {
+                            // HTTP is only the initial connection; upgrade to a client-specific websocket
+                            HttpListenerWebSocketContext wsContext = null;
+                            try
+                            {
+                                wsContext = await context.AcceptWebSocketAsync(subProtocol: null);
+                                int socketId = Interlocked.Increment(ref SocketCounter);
+                                var client = new ConnectedClient(socketId, wsContext.WebSocket);
+                                Clients.TryAdd(socketId, client);
+                                Console.WriteLine($"Socket {socketId}: New connection.");
+                                _ = Task.Run(() => SocketProcessingLoop(client).ConfigureAwait(false));
+                            }
+                            catch (Exception)
+                            {
+                                // server error if upgrade from HTTP to WebSocket fails
+                                context.Response.StatusCode = 500;
+                                context.Response.StatusDescription = "WebSocket upgrade failed";
+                                context.Response.Close();
+                                return;
+                            }
+                        }
+                        else
+                        {
+                            if (context.Request.AcceptTypes.Contains("text/html"))
+                            {
+                                ReadOnlyMemory<byte> HtmlPage = new ReadOnlyMemory<byte>(Encoding.UTF8.GetBytes(SimpleHtmlClient.HTML));
+                                context.Response.ContentType = "text/html; charset=utf-8";
+                                context.Response.StatusCode = 200;
+                                context.Response.StatusDescription = "OK";
+                                context.Response.ContentLength64 = HtmlPage.Length;
+                                await context.Response.OutputStream.WriteAsync(HtmlPage, CancellationToken.None);
+                                await context.Response.OutputStream.FlushAsync(CancellationToken.None);
+                            }
+                            else
+                            {
+                                context.Response.StatusCode = 400;
+                            }
+                            context.Response.Close();
+                        }
                     }
-                    catch (Exception)
+                    else
                     {
-                        // server error if upgrade from HTTP to WebSocket fails
-                        context.Response.StatusCode = 500;
+                        // HTTP 409 Conflict (with server's current state)
+                        context.Response.StatusCode = 409;
+                        context.Response.StatusDescription = "Server is shutting down";
                         context.Response.Close();
                         return;
                     }
                 }
-                else
-                {
-                    if (context.Request.AcceptTypes.Contains("text/html"))
-                    {
-                        ReadOnlyMemory<byte> HtmlPage = new ReadOnlyMemory<byte>(Encoding.UTF8.GetBytes(HTML));
-                        context.Response.ContentType = "text/html; charset=utf-8";
-                        context.Response.StatusCode = 200;
-                        context.Response.StatusDescription = "OK";
-                        context.Response.ContentLength64 = HtmlPage.Length;
-                        await context.Response.OutputStream.WriteAsync(HtmlPage, Token);
-                        await context.Response.OutputStream.FlushAsync(Token);
-                    }
-                    else
-                    {
-                        context.Response.StatusCode = 400;
-                    }
-                    context.Response.Close();
-                }
+            }
+            catch (HttpListenerException ex) when (ServerIsRunning)
+            {
+                Program.ReportException(ex);
             }
         }
 
-        private static async Task ProcessWebSocket(HttpListenerWebSocketContext context, int socketId)
+        private static async Task SocketProcessingLoop(ConnectedClient client)
         {
-            var socket = context.WebSocket;
+            _ = Task.Run(() => client.BroadcastLoop().ConfigureAwait(false));
 
-            BroadcastQueues.TryAdd(socketId, new BlockingCollection<string>());
-            var broadcastTokenSource = new CancellationTokenSource();
-            _ = Task.Run(() => WatchForBroadcasts(socketId, socket, broadcastTokenSource.Token));
-
+            var socket = client.Socket;
+            var loopToken = SocketLoopTokenSource.Token;
+            var broadcastTokenSource = client.BroadcastLoopTokenSource; // store a copy for use in finally block
             try
             {
-                byte[] buffer = new byte[4096];
-                while (socket.State == WebSocketState.Open && !Token.IsCancellationRequested)
+                var buffer = WebSocket.CreateServerBuffer(4096);
+                while (socket.State != WebSocketState.Closed && socket.State != WebSocketState.Aborted && !loopToken.IsCancellationRequested)
                 {
-                    var receiveResult = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), Token);
-                    Console.WriteLine($"Socket {socketId}: Received {receiveResult.MessageType} frame ({receiveResult.Count} bytes).");
-                    if (receiveResult.MessageType == WebSocketMessageType.Close)
+                    var receiveResult = await client.Socket.ReceiveAsync(buffer, loopToken);
+                    // if the token is cancelled while ReceiveAsync is blocking, the socket state changes to aborted and it can't be used
+                    if (!loopToken.IsCancellationRequested)
                     {
-                        Console.WriteLine($"Socket {socketId}: Closing websocket.");
-                        broadcastTokenSource.Cancel();
-                        BroadcastQueues.TryRemove(socketId, out _);
-                        await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "", Token);
-                    }
-                    else
-                    {
-                        Console.WriteLine($"Socket {socketId}: Echoing data to queue.");
-                        string message = Encoding.UTF8.GetString(buffer, 0, receiveResult.Count);
-                        BroadcastQueues[socketId].Add(message);
+                        // the client is notifying us that the connection will close; send acknowledgement
+                        if (client.Socket.State == WebSocketState.CloseReceived && receiveResult.MessageType == WebSocketMessageType.Close)
+                        {
+                            Console.WriteLine($"Socket {client.SocketId}: Acknowledging Close frame received from client");
+                            broadcastTokenSource.Cancel();
+                            await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Acknowledge Close frame", CancellationToken.None);
+                            // the socket state changes to closed at this point
+                        }
+
+                        // echo text or binary data to the broadcast queue
+                        if (client.Socket.State == WebSocketState.Open)
+                        {
+                            Console.WriteLine($"Socket {client.SocketId}: Received {receiveResult.MessageType} frame ({receiveResult.Count} bytes).");
+                            Console.WriteLine($"Socket {client.SocketId}: Echoing data to queue.");
+                            string message = Encoding.UTF8.GetString(buffer.Array, 0, receiveResult.Count);
+                            client.BroadcastQueue.Add(message);
+                        }
                     }
                 }
+                Console.WriteLine($"Socket {client.SocketId}: Ended processing loop in state {socket.State}");
+                
+                // by this point the socket is closed or aborted, the ConnectedClient object is useless
+                if(Clients.TryRemove(client.SocketId, out _))
+                    socket.Dispose();
             }
             catch (OperationCanceledException)
             {
@@ -141,148 +183,64 @@ namespace WebSocketWithBroadcasts
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"\nSocket {socketId}:\n  Exception {ex.GetType().Name}: {ex.Message}");
-                if (ex.InnerException != null) Console.WriteLine($"  Inner Exception {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
+                Console.WriteLine($"Socket {client.SocketId}:");
+                Program.ReportException(ex);
             }
             finally
             {
-                socket?.Dispose();
-                broadcastTokenSource?.Cancel();
-                broadcastTokenSource?.Dispose();
-                BroadcastQueues?.TryRemove(socketId, out _);
+                broadcastTokenSource.Cancel();
             }
         }
 
-        private const int BROADCAST_WAKEUP_INTERVAL = 250; // milliseconds
-
-        private static async Task WatchForBroadcasts(int socketId, WebSocket socket, CancellationToken socketToken)
+        private static async Task CloseAllSockets()
         {
-            while (!socketToken.IsCancellationRequested)
+            // We can't dispose the sockets until the processing loops are terminated,
+            // but terminating the loops will abort the sockets, preventing graceful closing.
+            var disposeQueue = new List<WebSocket>(Clients.Count);
+
+            while (Clients.Count > 0)
             {
-                try
+                var client = Clients.ElementAt(0).Value;
+                Console.WriteLine($"Closing Socket {client.SocketId}");
+
+                Console.WriteLine("... ending broadcast loop");
+                client.BroadcastLoopTokenSource.Cancel();
+
+                if(client.Socket.State != WebSocketState.Open)
                 {
-                    await Task.Delay(BROADCAST_WAKEUP_INTERVAL, socketToken);
-                    if (!socketToken.IsCancellationRequested && BroadcastQueues[socketId].TryTake(out var message))
+                    Console.WriteLine($"... socket not open, state = {client.Socket.State}");
+                }
+                else
+                {
+                    var timeout = new CancellationTokenSource(Program.CLOSE_SOCKET_TIMEOUT_MS);
+                    try
                     {
-                        Console.WriteLine($"Socket {socketId}: Sending from queue.");
-                        var msgbuf = new ArraySegment<byte>(Encoding.UTF8.GetBytes(message));
-                        await socket.SendAsync(msgbuf, WebSocketMessageType.Text, endOfMessage: true, socketToken);
+                        Console.WriteLine("... starting close handshake");
+                        await client.Socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", timeout.Token);
+                    }
+                    catch (OperationCanceledException ex)
+                    {
+                        Program.ReportException(ex);
+                        // normal upon task/token cancellation, disregard
                     }
                 }
-                catch(OperationCanceledException)
+
+                if(Clients.TryRemove(client.SocketId, out _))
                 {
-                    // normal upon task/token cancellation, disregard
+                    // only safe to Dispose once, so only add it if this loop can't process it again
+                    disposeQueue.Add(client.Socket);
                 }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"\nSocket {socketId} broadcast task:\n  Exception {ex.GetType().Name}: {ex.Message}");
-                    if (ex.InnerException != null) Console.WriteLine($"  Inner Exception {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
-                }
+
+                Console.WriteLine("... done");
             }
+
+            // now that they're all closed, terminate the blocking ReceiveAsync calls in the SocketProcessingLoop threads
+            SocketLoopTokenSource.Cancel();
+
+            // dispose all resources
+            foreach (var socket in disposeQueue)
+                socket.Dispose();
         }
 
-        private const string HTML =
-@"<!DOCTYPE html>
-  <meta charset=""utf-8""/>
-  <title>WebSocket Echo/Broadcast Client</title>
-  <script language=""javascript"" type=""text/javascript"">
-
-  var wsUri = ""ws://localhost:8080/"";
-        var output;
-        var websocket;
-
-        function init()
-        {
-            output = document.getElementById(""output"");
-            configWebSocket();
-        }
-
-        function configWebSocket()
-        {
-            websocket = new WebSocket(wsUri);
-            websocket.onopen = function(evt) { onOpen(evt) };
-            websocket.onclose = function(evt) { onClose(evt) };
-            websocket.onmessage = function(evt) { onMessage(evt) };
-            websocket.onerror = function(evt) { onError(evt) };
-        }
-
-        function onOpen(evt)
-        {
-            emit(""SOCKET OPENED"");
-            sendTextFrame(""Hello"");
-        }
-
-        function onClose(evt)
-        {
-            emit(""SOCKET CLOSED"");
-        }
-
-        function onMessage(evt)
-        {
-            emit('<span style=""color:blue;"">RECEIVED: ' + evt.data + '</span>');
-        }
-
-        function onError(evt)
-        {
-            emit('<span style=""color:red;"">ERROR: ' + evt.data + '</span>');
-        }
-
-        function sendTextFrame(message)
-        {
-            if (websocket.readyState == WebSocket.OPEN)
-            {
-                emit(""SENT: "" + message);
-                websocket.send(message);
-            }
-            else
-            {
-                emit(""Socket not open, state: "" + websocket.readyState);
-            }
-        }
-
-        function emit(message)
-        {
-            var pre = document.createElement(""p"");
-            pre.style.wordWrap = ""break-word"";
-            pre.innerHTML = message;
-            output.appendChild(pre);
-        }
-
-        function clickSend()
-        {
-            var txt = document.getElementById(""newMessage"");
-            if (txt.value.length > 0)
-            {
-                sendTextFrame(txt.value);
-                txt.value = """";
-                txt.focus();
-            }
-        }
-
-        function clickClose()
-        {
-            if (websocket.readyState == WebSocket.OPEN)
-            {
-                websocket.close();
-            }
-            else
-            {
-                emit(""Socket not open, state: "" + websocket.readyState);
-            }
-            document.getElementById(""sender"").disabled = true;
-            document.getElementById(""closer"").disabled = true;
-            document.getElementById(""newMessage"").disabled = true;
-        }
-
-        window.addEventListener(""load"", init, false);
-
-  </script>
-
-  <h2>Multi-Client WebSocket Echo/Broadcast Test</h2>
-
-  <p><input type=""input"" id=""newMessage"" onkeyup=""if(event.key==='Enter') clickSend()""/> <input type=""button"" id=""sender"" value=""Send"" onclick=""clickSend()""/> <input type=""button"" id=""closer"" value=""Disconnect"" onclick=""clickClose()""/>
-
-  <div id= ""output""></div> 
-";
     }
 }
