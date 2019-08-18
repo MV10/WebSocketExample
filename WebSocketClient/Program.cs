@@ -32,7 +32,7 @@ namespace WebSocketClientExample
         {
             try
             {
-                await WebSocketClient.Start(@"ws://localhost:8080/");
+                await WebSocketClient.StartAsync(@"ws://localhost:8080/");
                 Console.WriteLine("Press ESC to exit. Other keystrokes are sent to the echo server.\n\n");
                 bool running = true;
                 while (running && WebSocketClient.State == WebSocketState.Open)
@@ -50,7 +50,7 @@ namespace WebSocketClientExample
                         }
                     }
                 }
-                await WebSocketClient.Stop();
+                await WebSocketClient.StopAsync();
             }
             catch (OperationCanceledException)
             {

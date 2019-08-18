@@ -40,7 +40,7 @@ namespace WebSocketWithBroadcasts
                 Console.WriteLine("Connect browser for a basic echo-back web page.");
                 Console.WriteLine($"Server listening: {uriPrefix}");
                 // listen on a separate thread so that Listener.Stop can interrupt GetContextAsync
-                Task.Run(() => ListenerProcessingLoop().ConfigureAwait(false));
+                Task.Run(() => ListenerProcessingLoopAsync().ConfigureAwait(false));
             }
             else
             {
@@ -48,14 +48,14 @@ namespace WebSocketWithBroadcasts
             }
         }
 
-        public static async Task Stop()
+        public static async Task StopAsync()
         {
             if (Listener?.IsListening ?? false && ServerIsRunning)
             {
                 Console.WriteLine("\nServer is stopping.");
 
                 ServerIsRunning = false;            // prevent new connections during shutdown
-                await CloseAllSockets();            // also cancels processing loop tokens (abort ReceiveAsync)
+                await CloseAllSocketsAsync();            // also cancels processing loop tokens (abort ReceiveAsync)
                 ListenerLoopTokenSource.Cancel();   // safe to stop now that sockets are closed
                 Listener.Stop();
                 Listener.Close();
@@ -69,7 +69,7 @@ namespace WebSocketWithBroadcasts
                 kvp.Value.BroadcastQueue.Add(message);
         }
 
-        private static async Task ListenerProcessingLoop()
+        private static async Task ListenerProcessingLoopAsync()
         {
             var cancellationToken = ListenerLoopTokenSource.Token;
             try
@@ -90,7 +90,7 @@ namespace WebSocketWithBroadcasts
                                 var client = new ConnectedClient(socketId, wsContext.WebSocket);
                                 Clients.TryAdd(socketId, client);
                                 Console.WriteLine($"Socket {socketId}: New connection.");
-                                _ = Task.Run(() => SocketProcessingLoop(client).ConfigureAwait(false));
+                                _ = Task.Run(() => SocketProcessingLoopAsync(client).ConfigureAwait(false));
                             }
                             catch (Exception)
                             {
@@ -105,6 +105,7 @@ namespace WebSocketWithBroadcasts
                         {
                             if (context.Request.AcceptTypes.Contains("text/html"))
                             {
+                                Console.WriteLine("Sending HTML to client.");
                                 ReadOnlyMemory<byte> HtmlPage = new ReadOnlyMemory<byte>(Encoding.UTF8.GetBytes(SimpleHtmlClient.HTML));
                                 context.Response.ContentType = "text/html; charset=utf-8";
                                 context.Response.StatusCode = 200;
@@ -136,9 +137,9 @@ namespace WebSocketWithBroadcasts
             }
         }
 
-        private static async Task SocketProcessingLoop(ConnectedClient client)
+        private static async Task SocketProcessingLoopAsync(ConnectedClient client)
         {
-            _ = Task.Run(() => client.BroadcastLoop().ConfigureAwait(false));
+            _ = Task.Run(() => client.BroadcastLoopAsync().ConfigureAwait(false));
 
             var socket = client.Socket;
             var loopToken = SocketLoopTokenSource.Token;
@@ -171,11 +172,6 @@ namespace WebSocketWithBroadcasts
                         }
                     }
                 }
-                Console.WriteLine($"Socket {client.SocketId}: Ended processing loop in state {socket.State}");
-                
-                // by this point the socket is closed or aborted, the ConnectedClient object is useless
-                if(Clients.TryRemove(client.SocketId, out _))
-                    socket.Dispose();
             }
             catch (OperationCanceledException)
             {
@@ -189,10 +185,20 @@ namespace WebSocketWithBroadcasts
             finally
             {
                 broadcastTokenSource.Cancel();
+
+                Console.WriteLine($"Socket {client.SocketId}: Ended processing loop in state {socket.State}");
+
+                // don't leave the socket in any potentially connected state
+                if (client.Socket.State != WebSocketState.Closed)
+                    client.Socket.Abort();
+
+                // by this point the socket is closed or aborted, the ConnectedClient object is useless
+                if (Clients.TryRemove(client.SocketId, out _))
+                    socket.Dispose();
             }
         }
 
-        private static async Task CloseAllSockets()
+        private static async Task CloseAllSocketsAsync()
         {
             // We can't dispose the sockets until the processing loops are terminated,
             // but terminating the loops will abort the sockets, preventing graceful closing.

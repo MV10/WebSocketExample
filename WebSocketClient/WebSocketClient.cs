@@ -14,10 +14,10 @@ namespace WebSocketClientExample
         private static CancellationTokenSource SocketLoopTokenSource;
         private static CancellationTokenSource KeystrokeLoopTokenSource;
 
-        public static async Task Start(string wsUri)
-            => await Start(new Uri(wsUri));
+        public static async Task StartAsync(string wsUri)
+            => await StartAsync(new Uri(wsUri));
 
-        public static async Task Start(Uri wsUri)
+        public static async Task StartAsync(Uri wsUri)
         {
             Console.WriteLine($"Connecting to server {wsUri.ToString()}");
 
@@ -28,8 +28,8 @@ namespace WebSocketClientExample
             {
                 Socket = new ClientWebSocket();
                 await Socket.ConnectAsync(wsUri, CancellationToken.None);
-                _ = Task.Run(() => SocketProcessingLoop().ConfigureAwait(false));
-                _ = Task.Run(() => KeystrokeTransmitLoop().ConfigureAwait(false));
+                _ = Task.Run(() => SocketProcessingLoopAsync().ConfigureAwait(false));
+                _ = Task.Run(() => KeystrokeTransmitLoopAsync().ConfigureAwait(false));
             }
             catch (OperationCanceledException)
             {
@@ -37,7 +37,7 @@ namespace WebSocketClientExample
             }
         }
 
-        public static async Task Stop()
+        public static async Task StopAsync()
         {
             Console.WriteLine($"\nClosing connection");
             KeystrokeLoopTokenSource.Cancel();
@@ -68,7 +68,7 @@ namespace WebSocketClientExample
         public static void QueueKeystroke(string message)
             => KeystrokeQueue.Add(message);
 
-        private static async Task SocketProcessingLoop()
+        private static async Task SocketProcessingLoopAsync()
         {
             var cancellationToken = SocketLoopTokenSource.Token;
             try
@@ -115,7 +115,7 @@ namespace WebSocketClientExample
             }
         }
 
-        private static async Task KeystrokeTransmitLoop()
+        private static async Task KeystrokeTransmitLoopAsync()
         {
             var cancellationToken = KeystrokeLoopTokenSource.Token;
             while(!cancellationToken.IsCancellationRequested)

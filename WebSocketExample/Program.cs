@@ -16,7 +16,7 @@ namespace WebSocketExample
                 WebSocketServer.Start("http://localhost:8080/");
                 Console.WriteLine("Press any key to exit...\n");
                 Console.ReadKey(true);
-                await WebSocketServer.Stop();
+                await WebSocketServer.StopAsync();
             }
             catch(OperationCanceledException)
             {

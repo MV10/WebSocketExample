@@ -5,19 +5,22 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace WebSocketWithBroadcasts
+namespace KestrelWebSocketServer
 {
     public class ConnectedClient
     {
-        public ConnectedClient(int socketId, WebSocket socket)
+        public ConnectedClient(int socketId, WebSocket socket, TaskCompletionSource<object> taskCompletion)
         {
             SocketId = socketId;
             Socket = socket;
+            TaskCompletion = taskCompletion;
         }
 
         public int SocketId { get; private set; }
 
         public WebSocket Socket { get; private set; }
+
+        public TaskCompletionSource<object> TaskCompletion { get; private set; }
 
         public BlockingCollection<string> BroadcastQueue { get; } = new BlockingCollection<string>();
 
@@ -48,6 +51,5 @@ namespace WebSocketWithBroadcasts
                 }
             }
         }
-
     }
 }

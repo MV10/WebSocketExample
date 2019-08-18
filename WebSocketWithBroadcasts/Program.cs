@@ -32,7 +32,7 @@ namespace WebSocketWithBroadcasts
                     }
                 }
 
-                await WebSocketServer.Stop();
+                await WebSocketServer.StopAsync();
             }
             catch (OperationCanceledException)
             {
