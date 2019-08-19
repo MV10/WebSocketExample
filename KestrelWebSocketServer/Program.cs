@@ -23,9 +23,6 @@ namespace KestrelWebSocketServer
                 })
                 .Build()
                 .Run();
-
-            // TODO test HTTPS / WSS
-
         }
 
         // should use a logger but hey, it's a demo and it's free
