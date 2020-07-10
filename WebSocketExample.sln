@@ -12,6 +12,10 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution 
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "KestrelWebSocketServer", "KestrelWebSocketServer\KestrelWebSocketServer.csproj", "{DA0BF0E9-7839-496D-BD97-989B73ADAE02}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ChannelWSClient", "ChannelWSClient\ChannelWSClient.csproj", "{F7AA5C64-FCF2-450D-BF33-61D8BEE883DB}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ChannelWSServer", "ChannelWSServer\ChannelWSServer.csproj", "{FF551551-318F-4993-BCDF-543604C01FE7}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -26,6 +30,14 @@ Global
 		{DA0BF0E9-7839-496D-BD97-989B73ADAE02}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{DA0BF0E9-7839-496D-BD97-989B73ADAE02}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{DA0BF0E9-7839-496D-BD97-989B73ADAE02}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F7AA5C64-FCF2-450D-BF33-61D8BEE883DB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F7AA5C64-FCF2-450D-BF33-61D8BEE883DB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F7AA5C64-FCF2-450D-BF33-61D8BEE883DB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F7AA5C64-FCF2-450D-BF33-61D8BEE883DB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FF551551-318F-4993-BCDF-543604C01FE7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FF551551-318F-4993-BCDF-543604C01FE7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FF551551-318F-4993-BCDF-543604C01FE7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FF551551-318F-4993-BCDF-543604C01FE7}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
